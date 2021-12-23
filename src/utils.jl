@@ -1,11 +1,21 @@
 #%%
-function getParam(iLine)
+using JuLIP # for `atoms` in Julia https://github.com/JuliaMolSim/JuLIP.jl
+using NeighbourLists # for `PairList()`
+using LinearAlgebra # for `dot()`
+
+
+function getParam(lines, iLine)
     return strip( split(lines[iLine], "=")[2] , ' ')
 end
 
-function getParam2(n, iLine, typeNumber)
-    v = zeros(n)
-    l = split( strip( getParam(iLine), ['{', '}'] ), ',' )
+function getParam2(lines, n, iLine, typeNumber)
+    if typeNumber == "Int"
+        v = zeros(Int, n)
+    elseif typeNumber == "Float64"
+        v = zeros(Float64, n)
+    end
+    
+    l = split( strip( getParam(lines, iLine), ['{', '}'] ), ',' )
     for i in 1:n
         if typeNumber == "Int"
             v[i] = parse(Int, l[i])
@@ -16,9 +26,9 @@ function getParam2(n, iLine, typeNumber)
     return v
 end    
 
-function getParam3(n, iLine)
+function getParam3(lines, n, iLine)
     v = zeros(Int, (n, 4))
-    l = split( strip( getParam(iLine), ['{', '}'] ), "}, {"  )
+    l = split( strip( getParam(lines, iLine), ['{', '}'] ), "}, {"  )
     for i in 1:n
             temp = split( l[i], ',' )
             for j in 1:4
@@ -33,18 +43,18 @@ function load(filename="workdir/pot.mtp")
 
     @assert lines[1] == "MTP" "Can read only MTP format potentials"
 
-    version = getParam(2)
+    version = getParam(lines, 2)
     @assert version == "1.1.0" "MTP file must have version \"1.1.0\""
 
-    potential_name     = getParam(3)
-    scaling            = parse(Float64, getParam(4))
-    species_count      = parse(Int, getParam(5))
-    potential_tag      = getParam(6)
-    radial_basis_type  = getParam(7)
-    min_dist           = parse(Float64, getParam(8))
-    max_dist           = parse(Float64, getParam(9))
-    radial_basis_size  = parse(Int, getParam(10))
-    radial_funcs_count = parse(Int, getParam(11))
+    potential_name     = getParam(lines, 3)
+    scaling            = parse(Float64, getParam(lines, 4))
+    species_count      = parse(Int, getParam(lines, 5))
+    potential_tag      = getParam(lines, 6)
+    radial_basis_type  = getParam(lines, 7)
+    min_dist           = parse(Float64, getParam(lines, 8))
+    max_dist           = parse(Float64, getParam(lines, 9))
+    radial_basis_size  = parse(Int, getParam(lines, 10))
+    radial_funcs_count = parse(Int, getParam(lines, 11))
     
     iline = 13
     regression_coeffs = zeros( (species_count, species_count, radial_funcs_count, radial_basis_size) )
@@ -52,7 +62,7 @@ function load(filename="workdir/pot.mtp")
         for s2 in 1:species_count
             iline += 1
             for i in 1:radial_funcs_count
-                list_t = split( strip( lines[15], ['\t', '{', '}'] ), ',' )
+                list_t = split( strip( lines[iline], ['\t', '{', '}'] ), ',' )
                 iline += 1
                 for j in 1:radial_basis_size
                     regression_coeffs[s1, s2, i, j] = parse(Float64, list_t[j])
@@ -62,24 +72,24 @@ function load(filename="workdir/pot.mtp")
     end
     #
     
-    alpha_moments_count = parse(Int, getParam(iline))
+    alpha_moments_count = parse(Int, getParam(lines, iline))
     
-    alpha_index_basic_count = parse(Int, getParam(iline + 1))
-    alpha_index_basic       = getParam3(alpha_index_basic_count, iline + 2)
+    alpha_index_basic_count = parse(Int, getParam(lines, iline + 1))
+    alpha_index_basic       = getParam3(lines, alpha_index_basic_count, iline + 2)
     
     radial_func_max = maximum([ alpha_index_basic[i, 1] for i in 1:alpha_index_basic_count ])
     @assert radial_func_max == (radial_funcs_count - 1) "Wrong number of radial functions specified"
 
-    alpha_index_times_count = parse(Int, getParam(iline + 3))
-    alpha_index_times       = getParam3(alpha_index_times_count, iline + 4)
+    alpha_index_times_count = parse(Int, getParam(lines, iline + 3))
+    alpha_index_times       = getParam3(lines, alpha_index_times_count, iline + 4)
     
-    alpha_scalar_moments = parse(Int, getParam(iline + 5))
-    alpha_moment_mapping = getParam2(alpha_scalar_moments, iline + 6, "Int")
+    alpha_scalar_moments = parse(Int, getParam(lines, iline + 5))
+    alpha_moment_mapping = getParam2(lines, alpha_scalar_moments, iline + 6, "Int")
 
     alpha_count = alpha_scalar_moments + 1
     
-    species_coeffs       = getParam2(species_count, iline + 7, "Float64")
-    moment_coeffs        = getParam2(alpha_scalar_moments, iline + 8, "Float64")
+    species_coeffs       = getParam2(lines, species_count, iline + 7, "Float64")
+    moment_coeffs        = getParam2(lines, alpha_scalar_moments, iline + 8, "Float64")
     #
     params = Dict(
             "scaling" => scaling,
@@ -166,9 +176,6 @@ function correctIndexesInParameters!(parameters)
     for i in 1:parameters["alpha_scalar_moments"]
         parameters["alpha_moment_mapping"][i] += 1
     end
-    parameters["alpha_index_basic"] = alpha_index_basic
-    parameters["alpha_index_times"] = alpha_index_times
-    parameters["alpha_moment_mapping"] = alpha_moment_mapping
 end
 
 function belongs(x, xmin, xmax)
@@ -212,12 +219,14 @@ end
 # _pows(r, inv_dist_powers_, coords_powers_, max_alpha_index_basic, NeighbVect_j)
 function _pows!(r, inv_dist_powers_, coords_powers_, max_alpha_index_basic, NeighbVect_j)
     # mutates inv_dist_powers_, coords_powers_
-    inv_dist_powers_[1] = 1.0
-    coords_powers_[1]   = [1.0, 1.0, 1.0]
+    inv_dist_powers_[1]  = 1.0
+    coords_powers_[1, 1] = 1.0
+    coords_powers_[1, 2] = 1.0
+    coords_powers_[1, 3] = 1.0
     for k in 2:max_alpha_index_basic
         inv_dist_powers_[k] = inv_dist_powers_[k - 1] / r
         for i in 1:3
-            coords_powers_[k][i] = coords_powers_[k - 1][i] * NeighbVect_j[i]
+            coords_powers_[k, i] = coords_powers_[k - 1, i] * NeighbVect_j[i]
         end
     end
     return inv_dist_powers_, coords_powers_
@@ -247,13 +256,12 @@ function get_val_der(    mu,
                     rb_ders
                 )
     #
-    val = regression_coeffs[type_central, type_outer, mu, :] .* rb_vals
-    der = regression_coeffs[type_central, type_outer, mu, :] .* rb_ders
+    val = dot( regression_coeffs[type_central, type_outer, mu, :], rb_vals )
+    der = dot( regression_coeffs[type_central, type_outer, mu, :], rb_ders )
     return val, der
 end
 
 function update_moment_vals!(
-                    i_moment_vals,
                     moment_vals,
                     alpha_index_basic_count,
                     alpha_index_basic,
@@ -267,6 +275,7 @@ function update_moment_vals!(
                     )
     # update_moment_vals
     #
+    shiftIndx = 1 #0 # to account for Julia indexes begining in 1, instead of 0 as in C++
     for i in 1:alpha_index_basic_count
     # for i in i_moment_vals:
         # print(i)
@@ -295,14 +304,14 @@ function update_moment_vals!(
         a3 = alpha_index_basic[i, 4]
         
         k = a1 + a2 + a3
-        inv_powk = inv_dist_powers_[k]
+        inv_powk = inv_dist_powers_[k + shiftIndx] # I had to +1 to account for indices beginning in 1, not zero.
         val *= inv_powk
         # der = (der * inv_powk) - (k * val / r)
         
-        pow0 = coords_powers_[a1, 1]
-        pow1 = coords_powers_[a2, 2]
-        pow2 = coords_powers_[a3, 3]
-        
+        pow0 = coords_powers_[a1 + shiftIndx, 1]
+        pow1 = coords_powers_[a2 + shiftIndx, 2]
+        pow2 = coords_powers_[a3 + shiftIndx, 3]
+
         mult0 = pow0 * pow1 * pow2
         
         
@@ -357,7 +366,6 @@ function calcSiteEnergyDers(
                         scaling,
                         linear_mults,
                         max_linear,
-                        i_moment_vals
                         )
     #
     # from dev_src/mtpr.cpp: void MLMTPR::CalcSiteEnergyDers(const Neighborhood& nbh)
@@ -385,22 +393,23 @@ function calcSiteEnergyDers(
         # NeighbVect_j = nbh.vecs[j] #<<<<<<
         # r = nbh.dists[j]  #<<<<<<
 
-        NeighbVect_j = nbh[j]["D"]
-        r = nbh[j]["d"]
+        NeighbVect_j = nbh[4][j]
+        r = nbh[3][j]
 
-        rb_vals, rb_ders = rb_Calc(r, min_dist, max_dist, mult, rb_vals, rb_ders, scaling, rb_size)
-        #
+        # mutates rb_vals, rb_ders
+        rb_Calc!(r, min_dist, max_dist, mult, rb_vals, rb_ders, scaling, rb_size)
 
         rb_vals *= scaling # rb_vals is numpy array, so we can directly multyply by a float if array is float
         rb_ders *= scaling
 
-        inv_dist_powers_, coords_powers_ = _pows(r, inv_dist_powers_, coords_powers_, max_alpha_index_basic, NeighbVect_j)
+        # mutates inv_dist_powers_, coords_powers_
+        _pows!(r, inv_dist_powers_, coords_powers_, max_alpha_index_basic, NeighbVect_j)
 
         # type_outer = nbh.types[j] #<<<<<<
-        type_outer = nbh[j]["type"]
+        type_outer = nbh[5][j]
 
-        moment_vals = update_moment_vals(
-                            i_moment_vals,
+        # mutates moment_vals
+        update_moment_vals!(
                             moment_vals,
                             alpha_index_basic_count,
                             alpha_index_basic,
@@ -433,7 +442,8 @@ function calcSiteEnergyDers(
     #     val2 = alpha_index_times[i, 2]                # integer
     #     moment_vals[alpha_index_times[i, 3]] += val2 * val0 * val1
 	# #
-    moment_vals = finish_moment_vals(moment_vals, alpha_index_times_count, alpha_index_times)
+    # mutates moment_vals
+    finish_moment_vals!(moment_vals, alpha_index_times_count, alpha_index_times)
 
     # renewing maximum absolute values
     # for i in range(alpha_scalar_moments):
@@ -459,9 +469,9 @@ end
 function CalcEFS(atoms, neighborhoods, type_centrals, params, vecs)
     # from src/basic_mlip.cpp:  void AnyLocalMLIP::CalcEFS(Configuration& cfg)
     energy = 0.0
-    for i in 1:atoms.get_global_number_of_atoms()
+    for i in 1:length(atoms.X)
         nbh = neighborhoods[i]
-        lenNbh = len(nbh)
+        lenNbh = nbh[1]
         type_central = type_centrals[i]
 
         # energy += calcSiteEnergyDers(nbh, type_central)
@@ -493,7 +503,6 @@ function CalcEFS(atoms, neighborhoods, type_centrals, params, vecs)
                                         params["scaling"],
                                         vecs["linear_mults"],
                                         vecs["max_linear"],
-                                        vecs["i_moment_vals"],
                                     )        
         #
         # print(energy)
@@ -501,50 +510,34 @@ function CalcEFS(atoms, neighborhoods, type_centrals, params, vecs)
     return energy
 end
 
-function get_neighborhoods(atoms, listCutOffs, dictionaryTypes)
-    neighborList = neighborlist.NeighborList(listCutOffs, self_interaction=False, bothways=True)
-    neighborList.update(atoms)
-    li, lj, ld, lD = neighborlist.neighbor_list("ijdD", atoms, listCutOffs)
-
-    neighborhoods = Dict( i => [] for i in range(len(atoms)) )
-    # neighborhoods = [ [] for i in range(len(atoms)) ]
-    for k in 1:len(li)
-        i = li[k]
-        j = lj[k]
-        d = ld[k]
-        D = lD[k]
-        t = dictionaryTypes[ atoms[j].symbol ]
-        neighborhoods[i].append( Dict( "j"=>j, "d"=>d, "D"=>D, "type"=>t ) )
-        # neighborhoods[i].append( [ j, d, D, t ] )
+function get_neighborhoods(atoms, cutoff::Float64, dictionaryTypes)
+    nAtoms = length(atoms.X)
+    nlist = PairList(atoms.X, cutoff, atoms.cell, (true, true, true) )
+    nbs = []
+    for i in 1:nAtoms
+        list_j, list_D = neigs(nlist, i)
+        n      = length(list_j)
+        list_d = zeros(Float64, n)
+        list_z = zeros(Int16, n) # atomic numbers
+        for j in 1:n
+            v = list_D[j]
+            list_d[j] = sqrt( dot(v, v) )
+            list_z[j] = dictionaryTypes[ atoms.Z[j] ]
+        end
+        append!( nbs, [( n, list_j,  list_d, list_D, list_z )] )
     end
-    return neighborhoods
+    return nbs
 end
 
 # type_centrals = get_type_centrals(atoms, dictionaryTypes)
 function get_type_centrals(atoms, dictionaryTypes)
     # dictionaryTypes = { "C":0, "O":1 }
-    type_centrals = [dictionaryTypes[i] for i in atoms.get_chemical_symbols()]
+    type_centrals = zeros(Int16, length(atoms.X)) # Int16 as stated in line=21 in https://github.com/JuliaMolSim/JuLIP.jl/blob/master/src/chemistry.jl
+    type_centrals = [dictionaryTypes[z] for z in atoms.Z]
     return type_centrals
 end
 
-#%%
-
-# x = 3
-
-#%%
-using ASE
-atoms = bulk("Cu", cubic=true) * 2        # generate periodic Cu supercell
-# deleteat!(at, 1)                       # vacancy defect
-# emt = pyimport("ase.calculators.emt")  # import the EMT model
-# calc = ASECalculator(emt.EMT())        # wrap it into a Julia Object
-# @show energy(calc, at)
-
-# atoms.get_global_number_of_atoms()
-# len(atoms)
-
-#%%
-using JuLIP
-at = bulk(:Si, cubic=true)
-
-
-
+#TODO: define nAtoms instead of using lenth(atoms)
+#TODO: use `type_centrals` as argument in get_neighborhoods()
+#TODO: lenNbh = nbh[1], delete this line, and arrange the arguments of calcSiteEnergyDers(..., lengNbh,...)
+#TODO: sqrt() takes time, is it possible to get rid of it? knowing that 1/d will be needed later in _pows() ?
