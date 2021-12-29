@@ -1,5 +1,10 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+FillArrays = "1a297f60-69ca-5386-bcde-b61e274b549b"
 JuLIP = "945c410c-986d-556a-acb1-167a618e0462"
+LazyArrays = "5078a376-72f3-5289-bfd5-ec5146d43c02"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 NeighbourLists = "2fcf5ba9-9ed4-57cf-b73f-ff513e316b9c"
+Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+ProfileView = "c46f51b8-102a-5cf2-8d2c-8597cb0e0da7"
