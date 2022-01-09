@@ -163,6 +163,8 @@ function init_vecs(parameters::Dict{String, Any})
         lAlphaSum[i] = a1 + a2 + a3
     end
 
+    lval = zeros( parameters["alpha_index_basic_count"] )
+
 
     initializedVecs = Dict{String, Any}(
                 "rb_vals" => rb_vals,
@@ -177,7 +179,8 @@ function init_vecs(parameters::Dict{String, Any})
                 "max_linear" => max_linear,
                 "mult" => mult,
                 "lmu" => lmu,
-                "lAlphaSum" => lAlphaSum
+                "lAlphaSum" => lAlphaSum,
+                "lval" => lval
 
     )
     #
@@ -227,10 +230,10 @@ function rb_Calc!(
     ksi = ( (2 * r) - (min_dist + max_dist)) / (max_dist - min_dist)
     R   = r - max_dist
     R2  = R ^ 2
-	
+    
     # scaling is not read in RadialBasis_Chebyshev::RB_Calc(), so it keeps its default value = 1
     rb_vals[1] = R2 # instead of `scaling * (1 * R2)``
-	# rb_ders[0] = scaling * (0 * R2 + 2 * R) <<< why 0 * something??? I have to simplify below
+    # rb_ders[0] = scaling * (0 * R2 + 2 * R) <<< why 0 * something??? I have to simplify below
     # rb_ders[1] = 2.0 * R
 
     rb_vals[2] = ksi * R2
@@ -284,7 +287,7 @@ function finish_moment_vals!(
         val2 = alpha_index_times[i, 3]                # integer
         m = val2 * val0 * val1
         moment_vals[alpha_index_times[i, 4]] += m  #*** <<<<<<<<<<<<<<<<<<<<< Optimize performance here!!!
-	end
+    end
 end
 
 # https://discourse.julialang.org/t/memory-allocation-in-dot-product/67901
@@ -313,32 +316,34 @@ function update_moment_vals!(
                     rb_size::Int,
                     lmu::Vector{Int16},
                     lAlphaSum::Vector{Int16},
+                    lval::Vector{Float64},
                     )
     # update_moment_vals
     #
-    shiftIndx = 1 #0 # to account for Julia indexes begining in 1, instead of 0 as in C++
-    for i in 1:alpha_index_basic_count
+    @inbounds for i in 1:alpha_index_basic_count
         mu = lmu[i]
         val = mydot1(regression_coeffs, rb_vals, mu, type_outer, type_central, rb_size)
-        
+        lval[i] = val
+    end
+
+    shiftIndx = 1 #0 # to account for Julia indexes begining in 1, instead of 0 as in C++
+    @turbo for i in 1:alpha_index_basic_count
         a1 = alpha_index_basic[i, 2]
         a2 = alpha_index_basic[i, 3]
         a3 = alpha_index_basic[i, 4]
         
-        # k = a1 + a2 + a3
-        k = lAlphaSum[i]
-
-        inv_powk = inv_dist_powers_[k + shiftIndx] # I had to +1 to account for indices beginning in 1, not zero.
-        val *= inv_powk
-        # der = (der * inv_powk) - (k * val / r)
-        
         pow0 = coords_powers_[1, a1 + shiftIndx]
         pow1 = coords_powers_[2, a2 + shiftIndx]
         pow2 = coords_powers_[3, a3 + shiftIndx]
-
         mult0 = pow0 * pow1 * pow2
 
-        #
+        # k = a1 + a2 + a3
+        k = lAlphaSum[i]
+        inv_powk = inv_dist_powers_[k + shiftIndx] # I had to +1 to account for indices beginning in 1, not zero.
+        val = lval[i]
+        val *= inv_powk
+        # der = (der * inv_powk) - (k * val / r)
+
         moment_vals[i] += val * mult0  ## ***
         # mult0 *= der / r
         # moment_jacobian_[i, j, 0] += mult0 * NeighbVect_j[0]
@@ -393,6 +398,7 @@ function calcSiteEnergyDers(
     max_linear::Vector{Float64},
     lmu::Vector{Int16},
     lAlphaSum::Vector{Int16},
+    lval::Vector{Float64},
     )
     #
     # from dev_src/mtpr.cpp: void MLMTPR::CalcSiteEnergyDers(const Neighborhood& nbh)
@@ -408,8 +414,8 @@ function calcSiteEnergyDers(
     # dicTypes = {"C":0, "O": 1}
     # types = [0,0,0,0, 1,1] #just an example
 
-    # C = species_count   		#number of different species in current potential
-    # K = radial_func_count		#number of radial functions in current potential
+    # C = species_count         #number of different species in current potential
+    # K = radial_func_count     #number of radial functions in current potential
     # R = rb_size                 #number of Chebyshev polynomials constituting one radial function
 
     # moment_jacobian_ = np.zeros((alpha_index_basic_count, lenNbh, 3))
@@ -417,7 +423,7 @@ function calcSiteEnergyDers(
     @assert type_central < species_count "Too few species count in the MTP potential!"
 
     neighs_i = numberOfNeighbors[iAtom]
-    for j in 1:neighs_i
+    @inbounds for j in 1:neighs_i
         x = l_xyzr[1, j, iAtom]
         y = l_xyzr[2, j, iAtom]
         z = l_xyzr[3, j, iAtom]
@@ -447,20 +453,21 @@ function calcSiteEnergyDers(
                             coords_powers_,
                             rb_size,
                             lmu,
-                            lAlphaSum
+                            lAlphaSum,
+                            lval
                             )
         #
 
         ## Repulsive term
         ## I think it was not implemented in the C++ MTP code)
-		## if (p_RadialBasis->GetRBTypeString() == "RBChebyshev_repuls")
+        ## if (p_RadialBasis->GetRBTypeString() == "RBChebyshev_repuls")
         ## this seems arbitrary, I removed it:
         ## if r < min_dist:
-		## 	multiplier = 10000;
-		## 	buff_site_energy_ += multiplier*(exp(-10*(r-1)) - exp(-10*(min_dist-1)))
-		## 	for (int a = 0; a < 3; a++)
-		## 		buff_site_energy_ders_[j][a] += -10 * multiplier*(exp(-10 * (r - 1))/ nbh.dists[j])*nbh.vecs[j][a];
-		# #
+        ##  multiplier = 10000;
+        ##  buff_site_energy_ += multiplier*(exp(-10*(r-1)) - exp(-10*(min_dist-1)))
+        ##  for (int a = 0; a < 3; a++)
+        ##      buff_site_energy_ders_[j][a] += -10 * multiplier*(exp(-10 * (r - 1))/ nbh.dists[j])*nbh.vecs[j][a];
+        # #
     end
 
     # # Next: calculating non-elementary b_i
@@ -469,7 +476,7 @@ function calcSiteEnergyDers(
     #     val1 = moment_vals[ alpha_index_times[i, 1] ] # float
     #     val2 = alpha_index_times[i, 2]                # integer
     #     moment_vals[alpha_index_times[i, 3]] += val2 * val0 * val1
-	# #
+    # #
     # mutates moment_vals
     finish_moment_vals!(moment_vals, alpha_index_times_count, alpha_index_times)
 
@@ -533,6 +540,7 @@ function CalcEFS(
     moment_vals = vecs["moment_vals"]
     lmu = vecs["lmu"]
     lAlphaSum = vecs["lAlphaSum"]
+    lval = vecs["lval"]
 
     for i in 1:nAtoms
         type_central = l_t_centrals[i]    
@@ -571,7 +579,8 @@ function CalcEFS(
                     linear_mults,
                     max_linear,
                     lmu,
-                    lAlphaSum
+                    lAlphaSum,
+                    lval
                 )
         #
     #
@@ -580,6 +589,54 @@ function CalcEFS(
     
 
     return energy
+end
+
+function my_neighbors(max_dist, atoms, nAtoms)
+    # ni  = zeros(Int, nAtoms)
+    C = zeros(Int, (nAtoms, nAtoms))
+    for i in 1:nAtoms
+        Ri = atoms.X[i]
+        for j in (i+1):nAtoms
+            Rji = atoms.X[j] - Ri
+            if belongs( Rji[1], -max_dist, max_dist )
+                if belongs( Rji[2], -max_dist, max_dist )
+                    if belongs( Rji[3], -max_dist, max_dist )
+                        C[i,j] = 1
+                    end
+                end
+            end
+        end
+    end
+
+        
+
+end
+
+function get_xyzrNeighs(
+    nAtoms::Int,
+    atoms::Atoms,
+    cutoff::Float64,
+    dictionaryTypes::Dict{Int8, Int8}
+    )
+    # 
+    numberOfNeighbors = zeros(Int16, nAtoms)
+    nlist = PairList(atoms.X, cutoff, atoms.cell, (true, true, true) )
+    for i in 1:nAtoms
+        list_j, list_D = neigs(nlist, i)
+        n = length(list_j)
+        numberOfNeighbors[i] = n
+
+    end
+
+
+#        # allocate arrays for the many threads
+#    # set number of threads
+#    nt, nn = setup_mt(nat)
+#    # allocate arrays
+#    first_t = Vector{TI}[ Vector{TI}()  for n = 1:nt ]    # i
+#    secnd_t = Vector{TI}[ Vector{TI}()  for n = 1:nt ]    # j
+#    shift_t = Vector{SVec{TI}}[ Vector{SVec{TI}}()  for n = 1:nt ]  # ~ X[i] - X[j]
+
 end
 
 function get_neighborhoods(
@@ -611,7 +668,7 @@ function get_neighborhoods(
     l_xyzr    = zeros(Float64, (4, maxNeighs, nAtoms) )
     l_types   = zeros(Int8, (maxNeighs, nAtoms) )
     for i in 1:nAtoms
-        for j in 1:maxNeighs
+        for j in 1:numberOfNeighbors[i]
             l_xyzr[1, j, i] = nbs[i][3][j][1]
             l_xyzr[2, j, i] = nbs[i][3][j][2]
             l_xyzr[3, j, i] = nbs[i][3][j][3]
